@@ -1,0 +1,752 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: A sample template to create Bedrock Agent and Knowledge base with Amazon Opensearch Serverless vector database.
+Parameters:
+  StackVersion : 
+    Description: Provide unique version number for each deployment.
+    Type: String
+    Default: 1
+  S3BucketName: 
+    Description:  Provide S3 bucket name that contains the data and configuration files for this solution .
+    Type: String
+Resources:
+  AgentResource:
+    Type: AWS::Bedrock::Agent
+    DependsOn: SyncDataSource
+    Properties:
+      AgentName: !Sub pma-stack-agent-${StackVersion}
+      AgentResourceRoleArn: !GetAtt AmazonBedrockExecutionRoleForAgents.Arn
+      AutoPrepare: true
+      FoundationModel: "anthropic.claude-3-sonnet-20240229-v1:0"
+      Instruction: >- 
+        You are an agent that helps project manager to assign resources to a project or get information about SOW contracts. 
+        When the user wants to assign resources to a project, follow the below steps in sequence
+        1. Retrieve projects details like project Id, work location, resource type based on the project ID only.  Project ID is a numeric value. 
+        2. Then retrieve the employee profiles that match the project's work location, project type. Generate  and display response with matching Employee Id and Employee profile. If more than one employees are matched, display each employee profile in a new line.
+        Allow user to choose an employee to assign for the project. If none of the employees fit the work location, project type, display the response as  No matching resources available.  
+        3. After project manager indicates they would like to assign the resource of their choice to the already chosen project , use the employee Id corresponding to the chosen employee and project ID for chosen project, to assign resources to the project. Project ID and Employee Id  are numeric values
+        When the user wants to get the details of the project, Retrieve projects details like project Id, work location, resource type based on the project ID.  Project ID is a numeric value. 
+        When the user wants to get details about a contract, Access Knowledge base to get start date, end date, stakeholder email ID, sponsor email Id based on a contract Id only.  Contact ID is a numeric value
+      Description: "Bedrock agent for PMA"
+      IdleSessionTTLInSeconds: 900
+      ActionGroups:
+        - ActionGroupName: !Sub pma-stack-actiongroup-${StackVersion}
+          Description: "action group for PMA"
+          ActionGroupExecutor:
+            Lambda: !GetAtt ActionGrpResourceAllocationFunction.Arn
+          ApiSchema:
+            S3:
+              S3BucketName: !Ref S3BucketName
+              S3ObjectKey: "artifacts/project_management_asisstant.json"
+      KnowledgeBases:
+        - KnowledgeBaseId: !Ref KnowledgeBaseWithAoss
+          Description: 'Knowledge base for PMA'
+          KnowledgeBaseState: ENABLED     
+
+  AgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    Properties:
+      AgentAliasName: !Sub pma-stack-agentalias-${StackVersion}
+      AgentId: !GetAtt AgentResource.AgentId
+      Description: Agent Alias for PMA
+      
+
+  KnowledgeBaseWithAoss:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Sub pma-stack-kb-${StackVersion}
+      Description: 'Knowledge base for PMA'
+      RoleArn: !GetAtt AmazonBedrockExecutionRoleForKnowledgeBase.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0
+      StorageConfiguration:
+        Type: OPENSEARCH_SERVERLESS
+        OpensearchServerlessConfiguration:
+          CollectionArn: !GetAtt AossCollection.Arn
+          VectorIndexName: pma-index
+          FieldMapping:
+            VectorField: 'vector_field'
+            TextField: 'text_field'
+            MetadataField: 'metadata_field'
+    DependsOn: IndexCreation
+
+  KBDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !Ref KnowledgeBaseWithAoss
+      Name: !Sub pma-stack-ds-${StackVersion}
+      Description: 'S3 data source for PMA'
+      DataDeletionPolicy: RETAIN
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !Sub arn:aws:s3:::${S3BucketName}
+          InclusionPrefixes: 
+            - data
+
+  AossCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    Properties:
+      Description: OpenSearch serverless collection for Knowledge base
+      Name: !Sub pma-stack-opensearch-${StackVersion}
+      Type: VECTORSEARCH
+    DependsOn: EncryptionPolicy
+
+  LambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub pma-stack-layer-${StackVersion}
+      Description: OpenSearch-py libraries
+      Content:
+        S3Bucket: !Ref S3BucketName
+        S3Key: lambda_layer.zip
+      CompatibleRuntimes:
+        - python3.12
+  
+  SyncDataSource:
+    Type: Custom::DataSourceSyncFunction
+    DependsOn: KnowledgeBaseWithAoss 
+    Properties:
+      ServiceToken: !GetAtt DataSourceSyncFunction.Arn
+    
+
+  IndexCreation:
+    Type: Custom::IndexCreation
+    DependsOn: AossCollection
+    Properties:
+      ServiceToken: !GetAtt IndexCreationFunction.Arn
+      CollectionEndpoint: !GetAtt AossCollection.CollectionEndpoint  
+   
+  EncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub pma-stack-encr-policy-${StackVersion}
+      Type: encryption
+      Description: Encryption policy for open search pma collection
+      Policy: !Sub '{"Rules":[{"ResourceType":"collection","Resource":["collection/pma-stack-opensearch-${StackVersion}"]}],"AWSOwnedKey":true}'
+  DataAccessPolicy:
+    Type: 'AWS::OpenSearchServerless::AccessPolicy'
+    Properties:
+      Name: !Sub pma-stack-access-policy-${StackVersion}
+      Type: data
+      Description: Access policy for AOSS collection
+      Policy: !Sub >-
+        [{"Description":"Access for KB role","Rules":[{"ResourceType":"index","Resource":["index/*/*"],"Permission":["aoss:UpdateIndex", "aoss:DescribeIndex", "aoss:ReadDocument", "aoss:WriteDocument", "aoss:CreateIndex"]},
+        {"ResourceType":"collection","Resource":["collection/*"],"Permission":["aoss:DescribeCollectionItems", "aoss:CreateCollectionItems", "aoss:UpdateCollectionItems"]}],
+        "Principal":["${AmazonBedrockExecutionRoleForKnowledgeBase.Arn}","${LambdaRoleIndexCreation.Arn}"]}]
+  NetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: !Sub pma-stack-ntw-policy-${StackVersion}
+      Type: network
+      Description: Network policy for AOSS collection
+      Policy: !Sub '[{"Rules":[{"ResourceType":"collection","Resource":["collection/pma-stack-opensearch-${StackVersion}"]},
+        {"ResourceType":"dashboard","Resource":["collection/pma-stack-opensearch-${StackVersion}"]}],"AllowFromPublic":true}]'
+  
+  ActionGrpFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ActionGrpResourceAllocationFunction.Arn
+      Principal: bedrock.amazonaws.com
+      SourceAccount: !Sub ${AWS::AccountId}
+      
+  
+  AmazonBedrockExecutionRoleForAgents:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              ArnLike: 
+                AWS:SourceArn: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*
+      Path: /
+      Policies:
+        - PolicyName: AmazonBedrockBedrockAgent_s3bucketpolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${S3BucketName}/*
+
+        - PolicyName: AmazonBedrockBedrockAgent_foundationmodelpolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+        - PolicyName: AmazonBedrockBedrockAgent_knowledgebasepolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:Retrieve
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*
+
+
+  AmazonBedrockExecutionRoleForKnowledgeBase:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              ArnLike: 
+                AWS:SourceArn: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*
+      Path: /
+      Policies:
+        - PolicyName: AmazonBedrockFoundationModelPolicyForKnowledgeBase
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:ListCustomModels
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/*
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: 
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0
+        - PolicyName: AmazonBedrockOSSPolicyForKnowledgeBase
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource: !Sub arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*
+        - PolicyName: AmazonBedrockS3PolicyForKnowledgeBase
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3-object-lambda:ListBucket
+                Resource: !Sub arn:aws:s3:::*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:DescribeJob
+                  - s3-object-lambda:GetObject
+                Resource: !Sub arn:aws:s3:::${S3BucketName}/*
+
+  LambdaRoleDataSync:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              ArnLike: 
+                AWS:SourceArn: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pma_stack_datasource_sync-${StackVersion}
+      Path: /
+      Policies:
+        - PolicyName: lambda-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListJob
+                  - s3:DescribeJob
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3-object-lambda:GetObject
+                Resource: 
+                  - !Sub arn:aws:s3:::${S3BucketName}/*
+                  - !Sub arn:aws:s3:::${S3BucketName}/artifacts/*
+                  - !Sub arn:aws:s3:::${S3BucketName}/data/*   
+        - PolicyName: AmazonBedrockIngestionPolicyForKnowledgeBase
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:StartIngestionJob
+                  - bedrock:GetIngestionJob
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*
+  
+
+  LambdaRoleIndexCreation:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              ArnLike: 
+                AWS:SourceArn: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pma_stack_index_creation-${StackVersion}
+      Path: /
+      Policies:
+        - PolicyName: lambda-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*
+        - PolicyName: OSSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource: !Sub arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*
+        - PolicyName: AmazonBedrockIngestionPolicyForKnowledgeBase
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:StartIngestionJob
+                  - bedrock:GetIngestionJob
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*
+  
+
+  LambdaRoleActionGrp:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Sub ${AWS::AccountId}
+              ArnLike: 
+                AWS:SourceArn: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:pma_stack_resource_allocation-${StackVersion}
+      Path: /
+      Policies:
+        - PolicyName: lambda-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListJob
+                  - s3:DescribeJob
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3-object-lambda:GetObject
+                Resource: 
+                  - !Sub arn:aws:s3:::${S3BucketName}/*
+                  - !Sub arn:aws:s3:::${S3BucketName}/artifacts/*
+                  - !Sub arn:aws:s3:::${S3BucketName}/data/*      
+      
+  
+  
+  DataSourceSyncFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      FunctionName: !Sub 'pma_stack_datasource_sync-${StackVersion}'
+      Description: "Synchronize knowledge base data source"
+      Timeout: 120
+      Role: !GetAtt 'LambdaRoleDataSync.Arn'
+      Runtime: python3.12
+      Environment:
+        Variables:
+          KNOWLEDGEBASE_ID: !GetAtt KnowledgeBaseWithAoss.KnowledgeBaseId
+          DATASOURCE_ID: !GetAtt KBDataSource.DataSourceId
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json, boto3, logging
+          import os
+          import cfnresponse
+          import time
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          def lambda_handler(event, context):
+            logger.info('got event {}'.format(event))
+            if event['RequestType'] == 'Delete':
+              logger.info(f"data source sync function called at the time of stack deletion, skipping")
+              response = dict(files_copied=0, error=None)
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response)
+              return
+            try:
+              kbId = os.environ.get('KNOWLEDGEBASE_ID')
+              dsId = os.environ.get('DATASOURCE_ID')
+              region_name = os.environ.get('REGION')
+              boto3_session = boto3.Session()
+              bedrock_agent_client = boto3_session.client('bedrock-agent', region_name=region_name)
+              start_job_response = bedrock_agent_client.start_ingestion_job(knowledgeBaseId = kbId , dataSourceId = dsId )
+              job = start_job_response["ingestionJob"]
+              logger.info(job)
+              # Get job 
+              while(job['status']!='COMPLETE' ):
+                get_job_response = bedrock_agent_client.get_ingestion_job(knowledgeBaseId = kbId, dataSourceId = dsId, ingestionJobId = job["ingestionJobId"])
+                job = get_job_response["ingestionJob"]
+                time.sleep(30)
+
+              logger.info("Job completed")
+              response= {}
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response,"CustomResourcePhysicalID")
+            except Exception as e:
+              logger.error(e)
+              response= {}
+              cfnresponse.send(event, context, cfnresponse.FAILED, response,"CustomResourcePhysicalID")
+
+            return 
+
+
+  IndexCreationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      FunctionName: !Sub pma_stack_index_creation-${StackVersion}
+      Description: "Create index in OpenSearch collection "
+      Timeout: 360
+      Layers:
+        - !Ref LambdaLayer
+      Role: !GetAtt LambdaRoleIndexCreation.Arn
+      Runtime: python3.12
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref S3BucketName
+          REGION: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import json, boto3, logging
+          import cfnresponse
+          import time
+          import os
+          from opensearchpy import OpenSearch, RequestsHttpConnection, AWSV4SignerAuth
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+            if event['RequestType'] == 'Delete':
+              logger.info(f"index creation function called at the time of stack deletion, skipping")
+              response = dict(files_copied=0, error=None)
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response)
+              return
+            try:
+              collectionEndpoint = event['ResourceProperties']['CollectionEndpoint']
+              host = collectionEndpoint.split("/")[2]
+              region = os.environ.get('REGION')
+              service = 'aoss'
+              credentials = boto3.Session().get_credentials()
+              #awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
+              auth = AWSV4SignerAuth(credentials, region, service="aoss")
+              client = OpenSearch(
+                hosts=[{'host': host, 'port': 443}],
+                http_auth=auth,
+                use_ssl=True,
+                verify_certs=True,
+                connection_class=RequestsHttpConnection,
+                pool_maxsize=20,
+            )
+              logger.info("connection established")
+              # It can take up to a minute for data access rules to be enforced
+              time.sleep(45)
+              # Define the settings and mappings for creating an OpenSearch index. 
+              # It includes settings related to KNN (k-nearest neighbors) 
+              # and defines two fields: "text" with the type "text" and "vector_field" 
+              # with the type "knn_vector" and a specified dimension.
+              settings = {
+                "settings": {
+                    "index": {
+                        "knn": True,
+                    }
+                },
+                "mappings": {
+                  "properties": {
+                    "text_field": {"type": "text"},
+                    "vector_field": {
+                      "type": "knn_vector",
+                      "dimension": 1024,
+                      "method": {
+                        "engine": "faiss",
+                        "name": "hnsw"
+                      }
+                    },
+                  }
+                },
+              }
+              index_name = 'pma-index'
+              create_response = client.indices.create(index_name, body=settings)
+              logger.info('Index Created')
+              time.sleep(60)
+              logger.info("Timeout completed")
+              cfnresponse.send(event, context, cfnresponse.SUCCESS,create_response,"CustomResourcePhysicalID")
+            except Exception as e:
+              logger.info("Exception: {}".format(e))
+              response= {}
+              cfnresponse.send(event, context, cfnresponse.FAILED,response,"CustomResourcePhysicalID")
+
+
+  ActionGrpResourceAllocationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      FunctionName: !Sub pma_stack_resource_allocation-${StackVersion}
+      Description: "Action group function for resource management"
+      Timeout: 120
+      Layers:
+        - !Ref LambdaLayer
+      Role: !GetAtt LambdaRoleActionGrp.Arn
+      Runtime: python3.12
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref S3BucketName
+          
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import sqlite3
+          from datetime import datetime
+          import random
+          import logging
+          import os
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          
+          s3 = boto3.client('s3')
+          bucket = os.environ.get('BUCKET_NAME')
+          logger.info("Bucket Name: " + bucket)
+          db_name = 'artifacts/pma_db' #Location of data file in S3
+          local_db = '/tmp/rm.db' #Location in Lambda /tmp folder where data file will be copied
+
+          #Download data file from S3
+          s3.download_file(bucket, db_name, local_db)
+
+          cursor = None
+          conn = None
+
+          #Initial data load and SQLite3 cursor creation 
+          def load_data():
+            #load SQL Lite database from S3
+            # create the db
+            global conn
+            conn = sqlite3.connect(local_db)
+            cursor = conn.cursor()
+            logger.info('Completed initial data load ')
+
+            return cursor
+              
+          #Function returns all customer info for a particular customerId
+          def return_project_info(name):
+            nameValue = str(name)
+            query = 'SELECT ProjectId, ProjectDescription, ResourceType, WorkLocation, AssignedResources from Project where ProjectID = ?'
+            cursor.execute(query,(nameValue,))
+            resp = cursor.fetchall()
+            print(len(resp))
+            #print(resp)
+            #adding column names to response values
+            names = [description[0] for description in cursor.description]
+            valDict = []
+            interimDict = {}
+            index = 0
+            for item in resp:
+                for name in names:
+                    interimDict[name]=item[index]
+                    index = index + 1
+                index = 0
+                valDict.append(interimDict)
+                interimDict={}
+            logger.info('Project Info retrieved')
+            return valDict
+            
+              
+          #Function returns unallocated employee details  
+          def return_employee_details():
+            query = 'SELECT EmployeeID, EmployeeName, EmployeeProfile, PreferredWorkLocation from Employee where Status = "Unallocated"' 
+            cursor.execute(query)
+            resp = cursor.fetchall()
+            
+            #adding column names to response values
+            names = [description[0] for description in cursor.description]
+            valDict = []
+            interimDict = {}
+            index = 0
+            for item in resp:
+                for name in names:
+                    interimDict[name]=item[index]
+                    index = index + 1
+                index = 0
+                valDict.append(interimDict)
+                interimDict={}
+            logger.info('Employee info retrieved')
+            return valDict
+
+              
+          #function places order -- reduces shoe inventory, updates order_details table --> all actions resulting from a shoe purchase  
+          def assign_resource(empId, projId):
+            global cursor
+            global conn
+            #TO DO Query the project table to get the existing resource; update the status of the existing resourc to unallocated
+            
+            projectDetails = return_project_info(projId);
+            existingEmployeeId = projectDetails[0].get("AssignedResources");
+            logger.info('Existing empId'+str(existingEmployeeId))
+            
+            logger.info('empId'+str(empId))
+            projectId = str(projId)
+            employeeID = str(empId)
+            query = 'Update Project set AssignedResources = ? where ProjectID = ?'
+            ret1 = cursor.execute(query, (employeeID,projectId,))
+            
+          # Update the employee table to allocate the new employee
+            query = 'Update employee set status = "allocated", AssignedProjectID = ? where EmployeeID = ?'
+            ret2 = cursor.execute(query,(projectId,employeeID,))
+              
+            if(existingEmployeeId is not None):
+                # Update the employee table to unallocate the existing employee
+                projId_none = None
+                query = 'Update employee set status = "Unallocated",AssignedProjectID = "" where EmployeeID = ?'
+                ret3 = cursor.execute(query,(existingEmployeeId,))
+            
+            conn.commit()
+            
+            #Writing updated db file to S3 and setting cursor to None to force reload of data
+            s3.upload_file(local_db, bucket, db_name)
+            cursor = None
+            logger.info('Resource assigned')
+            return 1;
+              
+
+          def handler(event, context):
+            logger.info(event)
+            response_body = {
+                'application/json': {
+                    'body': 'from Lambda'
+                }
+            }
+            responses = []
+            
+            global cursor
+            if cursor == None:
+                cursor = load_data()
+            id = ''
+            pid = ''
+            api_path = event['apiPath']
+            logger.info('API Path')
+            logger.info(api_path)
+            
+            if api_path == '/project/{ProjectID}':
+                parameters = event['parameters']
+                for parameter in parameters:
+                    if parameter["name"] == "ProjectID":
+                        cName = parameter["value"]
+                body = return_project_info(cName)
+            elif api_path == '/assign_resource':
+                parameters = event['parameters']
+                for parameter in parameters:
+                    if parameter["name"] == "EmployeeID":
+                        id = parameter["value"]
+                        logger.info('id'+str(id))
+                    if parameter["name"] == "ProjectID":
+                        pid = parameter["value"]
+                        logger.info('pid'+str(pid))
+                body = assign_resource(id, pid)
+            elif api_path == '/check_resource_availability':
+                body = return_employee_details()
+            else:
+                body = {"{} is not a valid api, try another one.".format(api_path)}
+
+            response_body = {
+                'application/json': {
+                    'body': json.dumps(body)
+                }
+            }
+                
+            action_response = {
+                'actionGroup': event['actionGroup'],
+                'apiPath': event['apiPath'],
+                'httpMethod': event['httpMethod'],
+                'httpStatusCode': 200,
+                'responseBody': response_body
+            }
+
+            responses.append(action_response)
+            
+            api_response = {
+                'messageVersion': '1.0', 
+                'response': action_response}
+                
+            return api_response
+            
+Outputs:
+  S3Bucket:
+    Value: !Ref S3BucketName
+  OpeanSearchCollectionARN:
+    Value: !GetAtt AossCollection.Arn
+  AgentId:
+    Value: !GetAtt AgentResource.AgentId
+  AgentAliasId:
+    Value: !GetAtt AgentAlias.AgentAliasId
+  KnowledgeBaseId:
+    Value: !GetAtt KnowledgeBaseWithAoss.KnowledgeBaseId
+  DataSourceId:
+    Value: !GetAtt KBDataSource.DataSourceId
+  Region:
+    Value: !Ref AWS::Region

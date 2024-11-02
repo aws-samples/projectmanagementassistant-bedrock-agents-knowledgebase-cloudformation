@@ -1,0 +1,146 @@
+{
+    "openapi": "3.0.0",
+    "servers": [
+        {
+          "url": "https://api.example.com"
+        }
+       ],
+        "info": {
+            "title": "Resource Management Service",
+            "version": "1.0.0",
+            "description": "Resource Management service APIs for a resource management"
+        },
+        "paths": {
+            "/project/{ProjectID}": {
+                "get": {
+                    "summary": "Get project information",
+                    "description": "Based on provided name, return project information like project ID, Project Description,  work location and resource type ",
+                    "operationId": "getProjectInfo",
+                    "parameters": [{
+                        "name": "ProjectID",
+                        "in": "path",
+                        "description": "Project ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "Get project information",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "maxItems": 20,
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "ProjectID": {
+                                                    "type": "int",
+                                                    "description": "This is the Project ID of the project"
+                                                },
+                                                "ProjectDescription": {
+                                                    "type": "string",
+                                                    "description": "Project Description"
+                                                },
+                                                "ResourceType": {
+                                                    "type": "string",
+                                                    "description": "Resoucre type required for the project"
+                                                },
+                                                "workLocation": {
+                                                    "type": "string",
+                                                    "description": "Work location for the project"
+                                                }
+                                               
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/assign_resource": {
+                "get": {
+                    "summary": "Sub task to assign resource to a project on behalf of the customer",
+                    "description": "Assign a resource to a project by updating the project resources and emplyee status",
+                    "operationId": "assignResource",
+                    "parameters": [{
+                        "name": "EmployeeID",
+                        "in": "query",
+                        "description": "Employee ID to assign",
+                        "required": true,
+                        "schema": {
+                            "type": "int"
+                        }
+                    },
+                    {
+                        "name": "ProjectID",
+                        "in": "query",
+                        "description": "Project ID to assign a resource",
+                        "required": true,
+                        "schema": {
+                            "type": "int"
+                        }
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "Resource has been assigned",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "message": {
+                                                "type": "string",
+                                                "description": "Resource has been assigned to the project"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/check_resource_availability": {
+                "get": {
+                    "summary": "Returns all details related to unallocated employees, including employee ID, employee name, employee profile ",
+                    "description": "Checks employee table for resources and returns all availale information about unallocated employees, including employee ID, employee name, status, employee profile",
+                    "operationId": "checkEmployeeAvailability",
+                    "responses": {
+                        "200": {
+                            "description": "Returns resource information",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "EmployeeID": {
+                                                "type": "int",
+                                                "description": "This is the Employee ID for this employee"
+                                            },
+                                             "EmployeeName": {
+                                                "type": "string",
+                                                "description": "This is the Employee Name for this employee"
+                                            },
+                                             "EmployeeProfile": {
+                                                "type": "string",
+                                                "description": "This is the Employee Profile for this employee"
+                                            },
+                                            "PreferredWorkLocation": {
+                                               "type": "string",
+                                               "description": "This is the Employee preferred work location for this employee"
+                                           }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }    
+    }
