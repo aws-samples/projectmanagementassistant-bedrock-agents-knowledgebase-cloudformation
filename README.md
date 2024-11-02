@@ -77,7 +77,7 @@ zip -r lambda_layer.zip python
 Clone this GitHub repository. 
 
    ```
-   git clone <Repository URL>
+   git clone https://github.com/aws-samples/projectmanagementassistant-bedrock-agents-knowledgebase-cloudformation.git
    ```
 
 Explore the project folders and navigate to the ‘DataToUpload’ folder which contains below  files & folders:
@@ -150,4 +150,4 @@ You have successfully deployed the solution and now you can test the Project Man
 
 ## Conclusion
 
-In this article, we discussed the solution to build a Project Management Assistant and how it can improve the efficiency of the project managers. Hope you enjoyed learning and building a GenAI solution using Agents for Amazon Bedrock agents and knowledge base.
+This project focusses on guiding you to build a Project Management Assistant to improve the efficiency of the project managers. Hope you enjoyed learning and building a GenAI solution using Agents for Amazon Bedrock agents and knowledge base.
