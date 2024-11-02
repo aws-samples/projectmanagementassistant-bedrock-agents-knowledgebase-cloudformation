@@ -20,7 +20,7 @@ You can build a UI application to act as the entry point for Project Management 
 
 
 ### Agents for Amazon Bedrock  
-Orchestration is the brain of this solution and is implemented using [**Agents for Amazon Bedrock**](https://aws.amazon.com/bedrock/agents/). Agents for Amazon Bedrock is one of the key features of Bedrock that enables you to build and configure autonomous agents for your application. Agent orchestrates multi-step tasks and interactions between foundation models (FMs), data sources, software applications, and user conversations. We can configure agent to automatically call APIs to take actions using [**action group**](https://docs.aws.amazon.com/bedrock/latest/userguide/agents-action-create.html) and also agents can invoke knowledge bases to supplement information for these actions. In action group, you can define the actions that the agent should perform by defining either a OpenAPI schema or function details  
+Orchestration is the brain of this solution and is implemented using [**Agents for Amazon Bedrock**](https://aws.amazon.com/bedrock/agents/). Agents for Amazon Bedrock is one of the key features of Bedrock that enables you to build and configure autonomous agents for your application. 
 Following are the responsibilities of the agent in this solution: 
 1)	Breaking down the user request in to multiple smaller tasks 
 2)	Intelligently orchestrating the multi-step tasks 
@@ -36,14 +36,6 @@ As Project Management Assistant handles 2 functionalities, the agent should be a
 6)	Respond back to the customer with the confirmation
 
 ### Retrieval Augmented Generation (RAG)
-We have briefly talked about the Retrieval Augmented Generation technique and how it helps to customize the foundation model response with your organization data. Now, let’s see how to implement RAG. Building a RAG based solution includes following steps:
-1)	Establish integration with your organization’s data sources
-2)	Convert texts from your data sources to vector embeddings to enable efficient similarity search. This process requires an efficient chunking strategy and an embeddings foundation model. Chunking strategies are used to split large amount of information into smaller, more manageable chunks. Some of the well-known strategies are character chunking, token-based chunking, Hierarchical chunking and semantic chunking.
-3)	Store the embedding in a vector store. Vector store could be a database capable of storing vector embeddings and vector index. The vector store applies indexing strategies and similarity search algorithms to efficiently store and retrieve the embeddings that match user query. Some of the popular indexing strategies are Inverted File (IVF), Hierarchical Navigable Small World (HNSW) Algorithm and KNN.
-4)	Augment the user query with the retrieved information to generate relevant response from the Large Language Model (LLM)
-
-Building an efficient RAG solution from the scratch is time and effort consuming. Amazon Bedrock provides [**Knowledge Base for Amazon Bedrock**](https://aws.amazon.com/bedrock/knowledge-bases/), which is a fully managed implementation of RAG. Knowledge base makes it easier to leverage RAG technique in your GenAI solutions as you don’t have to custom build all the above-mentioned steps. Knowledge base can be set up effortlessly by following these [**simple steps**](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html). You can also conveniently associate the knowledge base with agent to add RAG capability to the agent.
-
 In this solution, we will use knowledge base to implement the interactive search functionality. Knowledge base provide options to choose your data source connectors, embeddings foundation model and vector store. We use [**Amazon OpenSearch**](https://aws.amazon.com/opensearch-service/) as the vector store in our solution for the ease of use. You could use your preferred vector store when setting up the knowledge base.  When the user queries the Project Management Assistant for information about a SOW contract or a policy, which is stored in the organization’s data source like [**Amazon S3**](https://aws.amazon.com/s3), the agent will route the user request to the knowledge base and return the generate response to the user.
 
 
